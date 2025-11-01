@@ -5,11 +5,14 @@ GLO-2000 Travail pratique 3 2024
 import argparse
 import socket
 import sys
+import logging
 from typing import NoReturn
 
 import glosocket
 import glocrypto
 
+logging.basicConfig(format='%(asctime)s %(levelname)s: %(message)s', level=logging.INFO, filename='logs/TP3.log')
+logger = logging.getLogger()
 
 def _parse_args(argv: list[str]) -> tuple[str, int]:
     """
@@ -123,13 +126,18 @@ def _server(port: int) -> NoReturn:
     Prépare son socket, puis gère les clients à l'infini.
     """
     # init d'un socket (AF_INET, SOCK_STREAM) = (IPv4, TCP)
-    socket_serveur = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    socket_serveur.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server_soc = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server_soc.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
     # server laisse la porte <port> de l'immeuble <loopback_ip_address> ouverte (mode 'ecoute')
     loopback_ip_address = "127.0.0.1"
-    socket_serveur.bind((loopback_ip_address, port))
-    socket_serveur.listen(5)
+    try:
+        server_soc.bind((loopback_ip_address, port))
+    except OverflowError as err:
+        logger.critical(f"Le port {port} est invalide -> {err}")
+        sys.exit(-1)
+    
+    server_soc.listen(5)
     print(f"Ecoute sur le port: {port}")
 
     client_num = 1
@@ -137,27 +145,30 @@ def _server(port: int) -> NoReturn:
     while True:
 
         # accept() : waiting for an incoming connection
-        client_soc, client_addr = socket_serveur.accept()
+        client_soc, client_addr = server_soc.accept()
         print(f"[LISTENING] Server listening to {client_addr}")
         print(f"Connexion nr{client_num}")
         client_num += 1
 
-        # MOT DE BIENVENUE (*temporary: to remove*)
-        GREETING = "Bienvenue sur le serveur, quel est votre nom?"
-        glosocket.send_mesg(client_soc, GREETING)
-        client_reply = glosocket.recv_mesg(client_soc)
-        print("Reponse: " + client_reply)
+        try:
 
-        # PROTOCOLE D'ECHANGE
-        modulus, base = _generate_modulus_base(client_soc)
-        private_key, public_key = _compute_two_keys(modulus, base)
-        peer_pubkey = _exchange_public_keys(public_key, client_soc)
-        shared_key = _compute_shared_key(private_key, peer_pubkey, modulus)
+            # MOT DE BIENVENUE (*temporary: to remove*)
+            GREETING = "Bienvenue sur le serveur, quel est votre nom?"
+            glosocket.send_mesg(client_soc, GREETING)
+            client_reply = glosocket.recv_mesg(client_soc)
+            print("Reponse: " + client_reply)
 
-        # Afficher la cle partagee dans le terminal ici
-        print(f"Cle partagee : {shared_key}")
+            # PROTOCOLE D'ECHANGE
+            modulus, base = _generate_modulus_base(client_soc)
+            private_key, public_key = _compute_two_keys(modulus, base)
+            peer_pubkey = _exchange_public_keys(public_key, client_soc)
+            shared_key = _compute_shared_key(private_key, peer_pubkey, modulus)
 
-        client_soc.close()
+            # Afficher la cle partagee dans le terminal ici
+            print(f"Cle partagee : {shared_key}")
+        
+        except glosocket.GLOSocketError:
+            client_soc.close()
 
 def _client(destination: str, port: int) -> None:
     """
@@ -168,29 +179,42 @@ def _client(destination: str, port: int) -> None:
     # init d'un socket en mode IPv4 (AF_INET), TCP (SOCK_STREAM)
     soc = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
-    # client se connecte au serveur (qui etait en mode 'ecoute')
+    # client se connecte au serveur (qui est en mode 'ecoute')
     address = (destination, port)
-    soc.connect(address)
+    try:
+        soc.connect(address)
+    except OverflowError as err:
+        logger.critical(f"Le port {port} est invalide -> {err}")
+        sys.exit(-1)
+    except ConnectionRefusedError as err:
+        logger.critical(f"L'adresse {destination} est invalide -> {err}")
+        sys.exit(-1)
 
     connected = True
     while connected:
 
-        # MOT DE BIENVENUE (*temporary: to remove*)
-        message = glosocket.recv_mesg(soc)
-        print(message)
-        reponse = input()
-        glosocket.send_mesg(soc, reponse)
+        try:
 
-        # PROTOCOLE D'ECHANGE
-        modulus, base = _receive_modulus_base(soc)
-        private_key, public_key = _compute_two_keys(modulus, base)
-        peer_pubkey = _exchange_public_keys(public_key, soc)
-        shared_key = _compute_shared_key(private_key, peer_pubkey, modulus)
+            # MOT DE BIENVENUE (*temporary: to remove*)
+            message = glosocket.recv_mesg(soc)
+            print(message)
+            reponse = input()
+            glosocket.send_mesg(soc, reponse)
 
-        # Afficher la cle partagee dans le terminal ici
-        print(f"Cle partagee : {shared_key}")
+            # PROTOCOLE D'ECHANGE
+            modulus, base = _receive_modulus_base(soc)
+            private_key, public_key = _compute_two_keys(modulus, base)
+            peer_pubkey = _exchange_public_keys(public_key, soc)
+            shared_key = _compute_shared_key(private_key, peer_pubkey, modulus)
 
-        connected = False
+            # Afficher la cle partagee dans le terminal ici
+            print(f"Cle partagee : {shared_key}")
+
+            connected = False
+
+        except glosocket.GLOSocketError:
+            logger.warning("Le client rencontre une erreur.")
+            sys.exit(-1)
 
     soc.close()
 
